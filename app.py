@@ -56,7 +56,10 @@ def get_access_token(msal_app, cache):
     if not token_result:
         flow = msal_app.initiate_device_flow(scopes=scopes)
         if "user_code" not in flow:
-            raise RuntimeError("Failed to start device code flow.")
+            error = flow.get("error")
+            description = flow.get("error_description")
+            detail = f" ({error}: {description})" if error or description else ""
+            raise RuntimeError(f"Failed to start device code flow.{detail}")
 
         print(flow["message"], flush=True)
         token_result = msal_app.acquire_token_by_device_flow(flow)
@@ -64,7 +67,10 @@ def get_access_token(msal_app, cache):
     save_cache(cache)
 
     if "access_token" not in token_result:
-        raise RuntimeError(f"Unable to acquire token: {token_result.get('error_description')}")
+        error = token_result.get("error")
+        description = token_result.get("error_description")
+        detail = f" ({error}: {description})" if error or description else ""
+        raise RuntimeError(f"Unable to acquire token.{detail}")
 
     return token_result["access_token"]
 
