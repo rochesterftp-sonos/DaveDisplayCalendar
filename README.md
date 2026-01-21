@@ -58,7 +58,7 @@ This project provides a lightweight Tkinter app for a Raspberry Pi 4 that displa
    python app.py
    ```
 
-   On first launch, a settings window will prompt for the number of tenants and per-tenant details. These are saved to `settings.json` in the project root.
+   On first launch, a settings window will prompt for the number of tenants and per-tenant details. These are saved to `settings.json` in the project root. If you have an `accounts.txt` file in the repo root, use **Import accounts.txt** to populate the form automatically.
 
 ## Autostart on boot (optional)
 

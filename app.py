@@ -14,6 +14,7 @@ import requests
 from dotenv import load_dotenv
 
 SETTINGS_FILE = Path("settings.json")
+ACCOUNTS_FILE = Path("accounts.txt")
 LOG_FILE = Path("outlook_clock.log")
 EVENT_REFRESH_SECONDS = 300
 TIME_REFRESH_MILLISECONDS = 1000
@@ -179,6 +180,43 @@ def select_next_event(events):
     return day_label, time_label, subject
 
 
+def parse_accounts_file(path: Path) -> list[TenantConfig]:
+    if not path.exists():
+        logger.warning("Accounts file not found at %s", path)
+        return []
+    content = path.read_text().splitlines()
+    tenants: list[TenantConfig] = []
+    current: dict[str, str] = {}
+    for line in content:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if key.lower() == "tenant_name" and current:
+            tenants.append(
+                TenantConfig(
+                    client_id=current.get("CLIENT_ID", ""),
+                    tenant_id=current.get("TENANT_ID") or "common",
+                    user_email=current.get("USER_EMAIL", ""),
+                )
+            )
+            current = {}
+        current[key] = value
+    if current:
+        tenants.append(
+            TenantConfig(
+                client_id=current.get("CLIENT_ID", ""),
+                tenant_id=current.get("TENANT_ID") or "common",
+                user_email=current.get("USER_EMAIL", ""),
+            )
+        )
+    return [tenant for tenant in tenants if tenant.client_id]
+
+
 class SettingsWindow:
     def __init__(self, root):
         self.root = root
@@ -194,7 +232,8 @@ class SettingsWindow:
         Button(self.window, text="Set", command=self.build_entries).pack(pady=10)
         self.container = Frame(self.window, bg="black")
         self.container.pack(fill=BOTH, expand=True)
-        Button(self.window, text="Save", command=self.save).pack(pady=10)
+        Button(self.window, text="Import accounts.txt", command=self.import_accounts).pack(pady=5)
+        Button(self.window, text="Save", command=self.save).pack(pady=5)
 
     def build_entries(self):
         for widget in self.container.winfo_children():
@@ -236,6 +275,18 @@ class SettingsWindow:
         if tenants:
             SETTINGS_FILE.write_text(json.dumps({"tenants": tenants}, indent=2))
         self.window.destroy()
+
+    def import_accounts(self):
+        tenants = parse_accounts_file(ACCOUNTS_FILE)
+        if not tenants:
+            return
+        self.count_var.set(str(len(tenants)))
+        self.build_entries()
+        for entry_vars, tenant in zip(self.entries, tenants):
+            client_id, tenant_id, user_email = entry_vars
+            client_id.set(tenant.client_id)
+            tenant_id.set(tenant.tenant_id)
+            user_email.set(tenant.user_email)
 
 
 class OutlookClockApp:
