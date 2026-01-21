@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 def load_settings():
     load_dotenv()
     client_id = os.getenv("CLIENT_ID")
-    tenant_id = os.getenv("TENANT_ID", "common")
+    tenant_id = os.getenv("TENANT_ID") or "common"
     user_email = os.getenv("USER_EMAIL", "")
 
     if not client_id:
