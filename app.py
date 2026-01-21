@@ -34,6 +34,7 @@ def load_settings():
 
 def build_msal_app(client_id, tenant_id):
     authority = f"https://login.microsoftonline.com/{tenant_id}"
+    logger.info("Using MSAL authority %s", authority)
     cache = msal.SerializableTokenCache()
 
     if TOKEN_CACHE_FILE.exists():
@@ -197,6 +198,7 @@ def main():
         format="%(asctime)s %(levelname)s %(message)s",
     )
     client_id, tenant_id, user_email = load_settings()
+    logger.info("Loaded settings with TENANT_ID=%s USER_EMAIL=%s", tenant_id, user_email or "(unset)")
     msal_app, cache = build_msal_app(client_id, tenant_id)
 
     root = Tk()
