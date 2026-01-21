@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class TenantConfig:
+    name: str
     client_id: str
     tenant_id: str
     user_email: str
@@ -41,21 +42,31 @@ def load_settings():
 
     if SETTINGS_FILE.exists():
         settings = json.loads(SETTINGS_FILE.read_text())
-        tenants = [
-            TenantConfig(
-                client_id=item["client_id"],
-                tenant_id=item.get("tenant_id") or "common",
-                user_email=item.get("user_email", ""),
+        tenants = []
+        for item in settings.get("tenants", []):
+            name = item.get("name") or item.get("tenant_name") or "Tenant"
+            tenants.append(
+                TenantConfig(
+                    name=name,
+                    client_id=item["client_id"],
+                    tenant_id=item.get("tenant_id") or "common",
+                    user_email=item.get("user_email", ""),
+                )
             )
-            for item in settings.get("tenants", [])
-        ]
         if tenants:
             return tenants
 
     if not client_id:
         raise ValueError("CLIENT_ID is required in the environment or .env file.")
 
-    return [TenantConfig(client_id=client_id, tenant_id=tenant_id, user_email=user_email)]
+    return [
+        TenantConfig(
+            name="Tenant",
+            client_id=client_id,
+            tenant_id=tenant_id,
+            user_email=user_email,
+        )
+    ]
 
 
 def build_msal_app(client_id, tenant_id, cache_path):
@@ -201,6 +212,7 @@ def parse_accounts_file(path: Path) -> list[TenantConfig]:
         if key.lower() == "tenant_name" and current:
             tenants.append(
                 TenantConfig(
+                    name=current.get("Tenant_name") or current.get("TENANT_NAME") or "Tenant",
                     client_id=current.get("CLIENT_ID", ""),
                     tenant_id=current.get("TENANT_ID") or "common",
                     user_email=current.get("USER_EMAIL", ""),
@@ -211,6 +223,7 @@ def parse_accounts_file(path: Path) -> list[TenantConfig]:
     if current:
         tenants.append(
             TenantConfig(
+                name=current.get("Tenant_name") or current.get("TENANT_NAME") or "Tenant",
                 client_id=current.get("CLIENT_ID", ""),
                 tenant_id=current.get("TENANT_ID") or "common",
                 user_email=current.get("USER_EMAIL", ""),
@@ -268,9 +281,12 @@ class SettingsWindow:
                 fg="white",
                 bg="black",
             ).pack(anchor="w", padx=10, pady=5)
+            tenant_name = StringVar()
             client_id = StringVar()
             tenant_id = StringVar(value="common")
             user_email = StringVar()
+            Label(self.container, text="Tenant name", fg="white", bg="black").pack(anchor="w", padx=20)
+            Entry(self.container, textvariable=tenant_name).pack(fill="x", padx=20)
             Label(self.container, text="Client ID", fg="white", bg="black").pack(anchor="w", padx=20)
             Entry(self.container, textvariable=client_id).pack(fill="x", padx=20)
             Label(self.container, text="Tenant ID", fg="white", bg="black").pack(anchor="w", padx=20)
@@ -282,14 +298,15 @@ class SettingsWindow:
                 text="Login",
                 command=lambda idx=index: self.login_tenant(idx),
             ).pack(anchor="e", padx=20, pady=5)
-            self.entries.append((client_id, tenant_id, user_email))
+            self.entries.append((tenant_name, client_id, tenant_id, user_email))
 
     def save(self):
         tenants = []
-        for client_id, tenant_id, user_email in self.entries:
+        for tenant_name, client_id, tenant_id, user_email in self.entries:
             if client_id.get().strip():
                 tenants.append(
                     {
+                        "name": tenant_name.get().strip() or "Tenant",
                         "client_id": client_id.get().strip(),
                         "tenant_id": tenant_id.get().strip(),
                         "user_email": user_email.get().strip(),
@@ -306,14 +323,15 @@ class SettingsWindow:
         self.count_var.set(str(len(tenants)))
         self.build_entries()
         for entry_vars, tenant in zip(self.entries, tenants):
-            client_id, tenant_id, user_email = entry_vars
+            tenant_name, client_id, tenant_id, user_email = entry_vars
+            tenant_name.set(tenant.name)
             client_id.set(tenant.client_id)
             tenant_id.set(tenant.tenant_id)
             user_email.set(tenant.user_email)
 
     def login_tenant(self, index):
         try:
-            client_id, tenant_id, _user_email = self.entries[index]
+            tenant_name, client_id, tenant_id, _user_email = self.entries[index]
         except IndexError:
             return
         client_id_value = client_id.get().strip()
@@ -321,14 +339,15 @@ class SettingsWindow:
             messagebox.showerror("Missing client ID", "Please enter a client ID before logging in.")
             return
         tenant_id_value = tenant_id.get().strip() or "common"
+        tenant_label = tenant_name.get().strip() or f"Tenant {index + 1}"
         thread = threading.Thread(
             target=self.run_device_flow,
-            args=(index, client_id_value, tenant_id_value),
+            args=(index, tenant_label, client_id_value, tenant_id_value),
             daemon=True,
         )
         thread.start()
 
-    def run_device_flow(self, index, client_id, tenant_id):
+    def run_device_flow(self, index, tenant_label, client_id, tenant_id):
         cache_path = Path(f"token_cache_{index}.json")
         msal_app, cache = build_msal_app(client_id, tenant_id, cache_path)
         flow = msal_app.initiate_device_flow(scopes=["Calendars.Read"])
@@ -338,8 +357,15 @@ class SettingsWindow:
             detail = f"{error}: {description}" if error or description else "Unknown error."
             self.root.after(0, lambda: messagebox.showerror("Login failed", detail))
             return
+        print(f"{tenant_label} login: {flow['message']}", flush=True)
         webbrowser.open("https://microsoft.com/device")
-        self.root.after(0, lambda: messagebox.showinfo("Device Login", flow["message"]))
+        self.root.after(
+            0,
+            lambda: messagebox.showinfo(
+                f"Device Login - {tenant_label}",
+                f"{tenant_label} login:\n{flow['message']}",
+            ),
+        )
         token_result = msal_app.acquire_token_by_device_flow(flow)
         save_cache(cache, cache_path)
         if "access_token" not in token_result:
@@ -409,12 +435,12 @@ class OutlookClockApp:
     def refresh_event(self):
         try:
             events = []
-            for index, tenant in enumerate(self.tenants):
-                cache_path = Path(f"token_cache_{index}.json")
-                msal_app, cache = build_msal_app(
-                    tenant.client_id,
-                    tenant.tenant_id,
-                    cache_path,
+        for index, tenant in enumerate(self.tenants):
+            cache_path = Path(f"token_cache_{index}.json")
+            msal_app, cache = build_msal_app(
+                tenant.client_id,
+                tenant.tenant_id,
+                cache_path,
                 )
                 token = get_access_token(msal_app, cache, cache_path)
                 day_label, time_info, subject, event_time = get_next_event(
