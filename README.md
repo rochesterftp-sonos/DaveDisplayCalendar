@@ -97,5 +97,6 @@ sudo systemctl enable --now outlook-clock.service
   source .venv/bin/activate
   pip install -r requirements.txt
   ```
+- If you start the app from the Pi desktop and still see `No module named 'msal'`, double-check that you activated the same `.venv` in that desktop terminal before running `python app.py`.
 - If you see `ValueError: CLIENT_ID is required in the environment or .env file.`, create the `.env` file in the project root and add `CLIENT_ID`, `TENANT_ID`, and `USER_EMAIL` as shown in the setup steps.
 - If you see `no display name and no $DISPLAY environment variable`, you are running without a graphical session. Run the app from a desktop session or export a valid display (for example `export DISPLAY=:0`) and ensure you have an X server running.
