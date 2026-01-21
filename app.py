@@ -76,6 +76,12 @@ def get_access_token(msal_app, cache):
         error = token_result.get("error")
         description = token_result.get("error_description")
         detail = f" ({error}: {description})" if error or description else ""
+        if description and "AADSTS7000218" in description:
+            hint = (
+                " Enable 'Allow public client flows' for the app registration or use "
+                "CLIENT_SECRET-based auth."
+            )
+            detail = f"{detail}{hint}"
         logger.error("Token acquisition failed.%s", detail)
         raise RuntimeError(f"Unable to acquire token.{detail}")
 

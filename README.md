@@ -110,3 +110,4 @@ sudo systemctl enable --now outlook-clock.service
     ```
 - If the error persists, check `outlook_clock.log` in the project root for the detailed error information.
 - If the log shows `AADSTS50059: No tenant-identifying information found`, verify that `TENANT_ID` is set (or remove it to use the default `common` value).
+- If you see `AADSTS7000218` (client secret required), enable **Allow public client flows** in the app registration or switch to a client-secret-based flow.
