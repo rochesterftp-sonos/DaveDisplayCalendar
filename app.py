@@ -3,16 +3,17 @@ import logging
 import os
 import queue
 import threading
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from tkinter import BOTH, Label, Tk
+from tkinter import BOTH, Button, Entry, Frame, Label, StringVar, Tk, Toplevel
 from zoneinfo import ZoneInfo
 
 import msal
 import requests
 from dotenv import load_dotenv
 
-TOKEN_CACHE_FILE = Path("token_cache.json")
+SETTINGS_FILE = Path("settings.json")
 LOG_FILE = Path("outlook_clock.log")
 EVENT_REFRESH_SECONDS = 300
 TIME_REFRESH_MILLISECONDS = 1000
@@ -22,36 +23,56 @@ LOCAL_TZ = ZoneInfo("America/New_York")
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class TenantConfig:
+    client_id: str
+    tenant_id: str
+    user_email: str
+
+
 def load_settings():
     load_dotenv()
     client_id = os.getenv("CLIENT_ID")
     tenant_id = os.getenv("TENANT_ID") or "common"
     user_email = os.getenv("USER_EMAIL", "")
 
+    if SETTINGS_FILE.exists():
+        settings = json.loads(SETTINGS_FILE.read_text())
+        tenants = [
+            TenantConfig(
+                client_id=item["client_id"],
+                tenant_id=item.get("tenant_id") or "common",
+                user_email=item.get("user_email", ""),
+            )
+            for item in settings.get("tenants", [])
+        ]
+        if tenants:
+            return tenants
+
     if not client_id:
         raise ValueError("CLIENT_ID is required in the environment or .env file.")
 
-    return client_id, tenant_id, user_email
+    return [TenantConfig(client_id=client_id, tenant_id=tenant_id, user_email=user_email)]
 
 
-def build_msal_app(client_id, tenant_id):
+def build_msal_app(client_id, tenant_id, cache_path):
     authority = f"https://login.microsoftonline.com/{tenant_id}"
     logger.info("Using MSAL authority %s", authority)
     cache = msal.SerializableTokenCache()
 
-    if TOKEN_CACHE_FILE.exists():
-        cache.deserialize(TOKEN_CACHE_FILE.read_text())
+    if cache_path.exists():
+        cache.deserialize(cache_path.read_text())
 
     app = msal.PublicClientApplication(client_id=client_id, authority=authority, token_cache=cache)
     return app, cache
 
 
-def save_cache(cache):
+def save_cache(cache, cache_path):
     if cache.has_state_changed:
-        TOKEN_CACHE_FILE.write_text(cache.serialize())
+        cache_path.write_text(cache.serialize())
 
 
-def get_access_token(msal_app, cache):
+def get_access_token(msal_app, cache, cache_path):
     accounts = msal_app.get_accounts()
     scopes = ["Calendars.Read"]
 
@@ -72,7 +93,7 @@ def get_access_token(msal_app, cache):
         print(flow["message"], flush=True)
         token_result = msal_app.acquire_token_by_device_flow(flow)
 
-    save_cache(cache)
+    save_cache(cache, cache_path)
 
     if "access_token" not in token_result:
         error = token_result.get("error")
@@ -126,11 +147,12 @@ def get_next_event(access_token, user_email):
     data = response.json()
     events = data.get("value", [])
     if not events:
-        return "No upcoming events", "", ""
+        return "No upcoming events", "", "", None
 
     event = events[0]
     subject = event.get("subject") or "(No subject)"
     start_time = event.get("start", {}).get("dateTime", "")
+    parsed = None
     try:
         parsed = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
         day_label, time_label = format_event_time(parsed)
@@ -142,15 +164,84 @@ def get_next_event(access_token, user_email):
         subject = f"{subject} ({user_email})"
 
     time_line = time_label
-    return day_label, time_line, subject
+    return day_label, time_line, subject, parsed
+
+
+def select_next_event(events):
+    dated_events = [event for event in events if event[3] is not None]
+    if not dated_events:
+        if not events:
+            return "No upcoming events", "", ""
+        day_label, time_label, subject, _event_time = events[0]
+        return day_label, time_label, subject
+    dated_events.sort(key=lambda item: item[3])
+    day_label, time_label, subject, _event_time = dated_events[0]
+    return day_label, time_label, subject
+
+
+class SettingsWindow:
+    def __init__(self, root):
+        self.root = root
+        self.count_var = StringVar(value="1")
+        self.entries = []
+        self.window = Toplevel(root)
+        self.window.title("Outlook Clock Settings")
+        self.window.configure(bg="black")
+        self.window.geometry("800x600")
+
+        Label(self.window, text="Number of tenants", fg="white", bg="black").pack()
+        Entry(self.window, textvariable=self.count_var).pack()
+        Button(self.window, text="Set", command=self.build_entries).pack(pady=10)
+        self.container = Frame(self.window, bg="black")
+        self.container.pack(fill=BOTH, expand=True)
+        Button(self.window, text="Save", command=self.save).pack(pady=10)
+
+    def build_entries(self):
+        for widget in self.container.winfo_children():
+            widget.destroy()
+        self.entries.clear()
+        try:
+            count = max(1, int(self.count_var.get()))
+        except ValueError:
+            count = 1
+        for index in range(count):
+            Label(
+                self.container,
+                text=f"Tenant {index + 1}",
+                fg="white",
+                bg="black",
+            ).pack(anchor="w", padx=10, pady=5)
+            client_id = StringVar()
+            tenant_id = StringVar(value="common")
+            user_email = StringVar()
+            Label(self.container, text="Client ID", fg="white", bg="black").pack(anchor="w", padx=20)
+            Entry(self.container, textvariable=client_id).pack(fill="x", padx=20)
+            Label(self.container, text="Tenant ID", fg="white", bg="black").pack(anchor="w", padx=20)
+            Entry(self.container, textvariable=tenant_id).pack(fill="x", padx=20)
+            Label(self.container, text="User email", fg="white", bg="black").pack(anchor="w", padx=20)
+            Entry(self.container, textvariable=user_email).pack(fill="x", padx=20)
+            self.entries.append((client_id, tenant_id, user_email))
+
+    def save(self):
+        tenants = []
+        for client_id, tenant_id, user_email in self.entries:
+            if client_id.get().strip():
+                tenants.append(
+                    {
+                        "client_id": client_id.get().strip(),
+                        "tenant_id": tenant_id.get().strip(),
+                        "user_email": user_email.get().strip(),
+                    }
+                )
+        if tenants:
+            SETTINGS_FILE.write_text(json.dumps({"tenants": tenants}, indent=2))
+        self.window.destroy()
 
 
 class OutlookClockApp:
-    def __init__(self, root, msal_app, cache, user_email):
+    def __init__(self, root, tenants):
         self.root = root
-        self.msal_app = msal_app
-        self.cache = cache
-        self.user_email = user_email
+        self.tenants = tenants
         self.event_queue = queue.Queue()
         self.current_event_day = "Fetching next event..."
         self.current_event_time = ""
@@ -204,8 +295,21 @@ class OutlookClockApp:
 
     def refresh_event(self):
         try:
-            token = get_access_token(self.msal_app, self.cache)
-            day_label, time_info, subject = get_next_event(token, self.user_email)
+            events = []
+            for index, tenant in enumerate(self.tenants):
+                cache_path = Path(f"token_cache_{index}.json")
+                msal_app, cache = build_msal_app(
+                    tenant.client_id,
+                    tenant.tenant_id,
+                    cache_path,
+                )
+                token = get_access_token(msal_app, cache, cache_path)
+                day_label, time_info, subject, event_time = get_next_event(
+                    token,
+                    tenant.user_email,
+                )
+                events.append((day_label, time_info, subject, event_time))
+            day_label, time_info, subject = select_next_event(events)
             self.event_queue.put((day_label, time_info, subject))
         except Exception as exc:  # noqa: BLE001 - surface errors for display
             logger.exception("Failed to refresh event.")
@@ -228,12 +332,15 @@ def main():
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
     )
-    client_id, tenant_id, user_email = load_settings()
-    logger.info("Loaded settings with TENANT_ID=%s USER_EMAIL=%s", tenant_id, user_email or "(unset)")
-    msal_app, cache = build_msal_app(client_id, tenant_id)
-
     root = Tk()
-    app = OutlookClockApp(root, msal_app, cache, user_email)
+    if not SETTINGS_FILE.exists():
+        root.withdraw()
+        settings_window = SettingsWindow(root)
+        root.wait_window(settings_window.window)
+        root.deiconify()
+    tenants = load_settings()
+    logger.info("Loaded settings with %s tenants", len(tenants))
+    app = OutlookClockApp(root, tenants)
     root.mainloop()
 
 
