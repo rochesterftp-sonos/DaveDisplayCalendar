@@ -3,10 +3,12 @@ import logging
 import os
 import queue
 import threading
+import webbrowser
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from tkinter import BOTH, Button, Entry, Frame, Label, StringVar, Tk, Toplevel
+from tkinter import BOTH, Button, Canvas, Entry, Frame, Label, Scrollbar, StringVar, Tk, Toplevel
+from tkinter import messagebox
 from zoneinfo import ZoneInfo
 
 import msal
@@ -230,10 +232,26 @@ class SettingsWindow:
         Label(self.window, text="Number of tenants", fg="white", bg="black").pack()
         Entry(self.window, textvariable=self.count_var).pack()
         Button(self.window, text="Set", command=self.build_entries).pack(pady=10)
-        self.container = Frame(self.window, bg="black")
-        self.container.pack(fill=BOTH, expand=True)
+
+        self.canvas = Canvas(self.window, bg="black", highlightthickness=0)
+        self.scrollbar = Scrollbar(self.window, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.scrollbar.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill=BOTH, expand=True)
+
+        self.container = Frame(self.canvas, bg="black")
+        self.canvas_window = self.canvas.create_window((0, 0), window=self.container, anchor="nw")
+        self.container.bind("<Configure>", self.on_frame_configure)
+        self.canvas.bind("<Configure>", self.on_canvas_configure)
+
         Button(self.window, text="Import accounts.txt", command=self.import_accounts).pack(pady=5)
         Button(self.window, text="Save", command=self.save).pack(pady=5)
+
+    def on_frame_configure(self, _event):
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+    def on_canvas_configure(self, event):
+        self.canvas.itemconfig(self.canvas_window, width=event.width)
 
     def build_entries(self):
         for widget in self.container.winfo_children():
@@ -259,6 +277,11 @@ class SettingsWindow:
             Entry(self.container, textvariable=tenant_id).pack(fill="x", padx=20)
             Label(self.container, text="User email", fg="white", bg="black").pack(anchor="w", padx=20)
             Entry(self.container, textvariable=user_email).pack(fill="x", padx=20)
+            Button(
+                self.container,
+                text="Login",
+                command=lambda idx=index: self.login_tenant(idx),
+            ).pack(anchor="e", padx=20, pady=5)
             self.entries.append((client_id, tenant_id, user_email))
 
     def save(self):
@@ -287,6 +310,45 @@ class SettingsWindow:
             client_id.set(tenant.client_id)
             tenant_id.set(tenant.tenant_id)
             user_email.set(tenant.user_email)
+
+    def login_tenant(self, index):
+        try:
+            client_id, tenant_id, _user_email = self.entries[index]
+        except IndexError:
+            return
+        client_id_value = client_id.get().strip()
+        if not client_id_value:
+            messagebox.showerror("Missing client ID", "Please enter a client ID before logging in.")
+            return
+        tenant_id_value = tenant_id.get().strip() or "common"
+        thread = threading.Thread(
+            target=self.run_device_flow,
+            args=(index, client_id_value, tenant_id_value),
+            daemon=True,
+        )
+        thread.start()
+
+    def run_device_flow(self, index, client_id, tenant_id):
+        cache_path = Path(f"token_cache_{index}.json")
+        msal_app, cache = build_msal_app(client_id, tenant_id, cache_path)
+        flow = msal_app.initiate_device_flow(scopes=["Calendars.Read"])
+        if "user_code" not in flow:
+            error = flow.get("error")
+            description = flow.get("error_description")
+            detail = f"{error}: {description}" if error or description else "Unknown error."
+            self.root.after(0, lambda: messagebox.showerror("Login failed", detail))
+            return
+        webbrowser.open("https://microsoft.com/device")
+        self.root.after(0, lambda: messagebox.showinfo("Device Login", flow["message"]))
+        token_result = msal_app.acquire_token_by_device_flow(flow)
+        save_cache(cache, cache_path)
+        if "access_token" not in token_result:
+            error = token_result.get("error")
+            description = token_result.get("error_description")
+            detail = f"{error}: {description}" if error or description else "Unknown error."
+            self.root.after(0, lambda: messagebox.showerror("Login failed", detail))
+            return
+        self.root.after(0, lambda: messagebox.showinfo("Login complete", "Authentication succeeded."))
 
 
 class OutlookClockApp:
