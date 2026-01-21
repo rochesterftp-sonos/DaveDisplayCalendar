@@ -103,4 +103,8 @@ sudo systemctl enable --now outlook-clock.service
 - If you see `Failed to start device code flow`, confirm that:
   - The `CLIENT_ID` and `TENANT_ID` values are correct.
   - The Azure app registration is configured as a **public client** (Allow public client flows = **Yes**).
-  - The Pi has network access and correct system time (device flow can fail with clock drift).
+  - The Pi has network access and correct system time (device flow can fail with clock drift). Run:
+    ```bash
+    date
+    timedatectl status
+    ```
