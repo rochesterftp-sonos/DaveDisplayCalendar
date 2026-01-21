@@ -97,3 +97,4 @@ sudo systemctl enable --now outlook-clock.service
   source .venv/bin/activate
   pip install -r requirements.txt
   ```
+- If you see `ValueError: CLIENT_ID is required in the environment or .env file.`, create the `.env` file in the project root and add `CLIENT_ID`, `TENANT_ID`, and `USER_EMAIL` as shown in the setup steps.
