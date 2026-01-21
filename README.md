@@ -91,3 +91,9 @@ sudo systemctl enable --now outlook-clock.service
 
 - If the app can’t open the GUI, confirm the Pi is running a graphical session and that the `DISPLAY` variable is correct.
 - Delete `token_cache.json` if you need to force a new login.
+- If you see `ModuleNotFoundError: No module named 'msal'`, make sure the virtual environment is active and dependencies are installed:
+
+  ```bash
+  source .venv/bin/activate
+  pip install -r requirements.txt
+  ```
