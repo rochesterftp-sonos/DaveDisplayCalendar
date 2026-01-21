@@ -435,12 +435,12 @@ class OutlookClockApp:
     def refresh_event(self):
         try:
             events = []
-        for index, tenant in enumerate(self.tenants):
-            cache_path = Path(f"token_cache_{index}.json")
-            msal_app, cache = build_msal_app(
-                tenant.client_id,
-                tenant.tenant_id,
-                cache_path,
+            for index, tenant in enumerate(self.tenants):
+                cache_path = Path(f"token_cache_{index}.json")
+                msal_app, cache = build_msal_app(
+                    tenant.client_id,
+                    tenant.tenant_id,
+                    cache_path,
                 )
                 token = get_access_token(msal_app, cache, cache_path)
                 day_label, time_info, subject, event_time = get_next_event(
