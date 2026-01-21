@@ -25,6 +25,8 @@ This project provides a lightweight Tkinter app for a Raspberry Pi 4 that displa
 2. **Clone this repo and install Python dependencies**:
 
    ```bash
+   git clone <repo-url>
+   cd Murder_On_The_Mergviglia
    python3 -m venv .venv
    source .venv/bin/activate
    pip install -r requirements.txt
