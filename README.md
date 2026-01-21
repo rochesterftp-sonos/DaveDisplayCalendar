@@ -108,3 +108,4 @@ sudo systemctl enable --now outlook-clock.service
     date
     timedatectl status
     ```
+- If the error persists, check `outlook_clock.log` in the project root for the detailed error information.

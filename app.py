@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import queue
 import threading
@@ -11,9 +12,12 @@ import requests
 from dotenv import load_dotenv
 
 TOKEN_CACHE_FILE = Path("token_cache.json")
+LOG_FILE = Path("outlook_clock.log")
 EVENT_REFRESH_SECONDS = 300
 TIME_REFRESH_MILLISECONDS = 1000
 GRAPH_ENDPOINT = "https://graph.microsoft.com/v1.0"
+
+logger = logging.getLogger(__name__)
 
 
 def load_settings():
@@ -59,6 +63,7 @@ def get_access_token(msal_app, cache):
             error = flow.get("error")
             description = flow.get("error_description")
             detail = f" ({error}: {description})" if error or description else ""
+            logger.error("Device code flow failed to start.%s", detail)
             raise RuntimeError(f"Failed to start device code flow.{detail}")
 
         print(flow["message"], flush=True)
@@ -70,6 +75,7 @@ def get_access_token(msal_app, cache):
         error = token_result.get("error")
         description = token_result.get("error_description")
         detail = f" ({error}: {description})" if error or description else ""
+        logger.error("Token acquisition failed.%s", detail)
         raise RuntimeError(f"Unable to acquire token.{detail}")
 
     return token_result["access_token"]
@@ -171,6 +177,7 @@ class OutlookClockApp:
             subject, time_info = get_next_event(token, self.user_email)
             self.event_queue.put((subject, time_info))
         except Exception as exc:  # noqa: BLE001 - surface errors for display
+            logger.exception("Failed to refresh event.")
             self.event_queue.put((f"Error: {exc}", ""))
 
     def flush_event_queue(self):
@@ -184,6 +191,11 @@ class OutlookClockApp:
 
 
 def main():
+    logging.basicConfig(
+        filename=LOG_FILE,
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
     client_id, tenant_id, user_email = load_settings()
     msal_app, cache = build_msal_app(client_id, tenant_id)
 

@@ -3,3 +3,4 @@ __pycache__/
 *.pyc
 .env
 token_cache.json
+outlook_clock.log
