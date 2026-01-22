@@ -59,6 +59,16 @@ def is_event_active(start_time: datetime | None, end_time: datetime | None) -> b
     return start_time.astimezone(LOCAL_TZ) <= now_local <= end_time.astimezone(LOCAL_TZ)
 
 
+def is_event_soon(start_time: datetime | None, minutes: int = 10) -> bool:
+    if not start_time:
+        return False
+    now_local = datetime.now(LOCAL_TZ)
+    start_local = start_time.astimezone(LOCAL_TZ)
+    if start_local <= now_local:
+        return False
+    return start_local - now_local <= timedelta(minutes=minutes)
+
+
 def load_settings():
     load_dotenv()
     client_id = os.getenv("CLIENT_ID")
@@ -452,6 +462,7 @@ class OutlookClockApp:
         self.next_event_day = ""
         self.next_event_time = ""
         self.next_event_detail = ""
+        self.next_event_start: datetime | None = None
 
         self.root.title("Outlook Clock")
         self.root.configure(bg="black")
@@ -519,6 +530,7 @@ class OutlookClockApp:
         )
         is_active = is_event_active(self.current_event_start, self.current_event_end)
         self.event_label.config(fg="green" if is_active else "white")
+        soon_next = is_event_soon(self.next_event_start)
         self.next_event_label.config(
             text=(
                 f"{self.next_event_day}\n"
@@ -526,6 +538,7 @@ class OutlookClockApp:
                 f"{self.next_event_detail}"
             ).strip()
         )
+        self.next_event_label.config(fg="red" if soon_next else NEXT_EVENT_COLOR)
         self.root.after(TIME_REFRESH_MILLISECONDS, self.update_time)
         self.flush_event_queue()
 
@@ -561,16 +574,17 @@ class OutlookClockApp:
                         current_event.subject,
                         current_event.start_time,
                         current_event.end_time,
+                        next_event.start_time if next_event else None,
                         next_event.day_label if next_event else "",
                         next_event.time_label if next_event else "",
                         next_event.subject if next_event else "",
                     )
                 )
             else:
-                self.event_queue.put(("No upcoming events", "", "", None, None, "", "", ""))
+                self.event_queue.put(("No upcoming events", "", "", None, None, None, "", "", ""))
         except Exception as exc:  # noqa: BLE001 - surface errors for display
             logger.exception("Failed to refresh event.")
-            self.event_queue.put(("Error", "", str(exc), None, None, "", "", ""))
+            self.event_queue.put(("Error", "", str(exc), None, None, None, "", "", ""))
 
     def flush_event_queue(self):
         try:
@@ -581,6 +595,7 @@ class OutlookClockApp:
                     subject,
                     start_time,
                     end_time,
+                    next_start,
                     next_day,
                     next_time,
                     next_detail,
@@ -590,6 +605,7 @@ class OutlookClockApp:
                 self.current_event_detail = subject
                 self.current_event_start = start_time
                 self.current_event_end = end_time
+                self.next_event_start = next_start
                 self.next_event_day = next_day
                 self.next_event_time = next_time
                 self.next_event_detail = next_detail
