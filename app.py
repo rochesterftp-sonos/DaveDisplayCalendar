@@ -49,7 +49,14 @@ class EventDisplay:
     time_label: str
     subject: str
     start_time: datetime
-    is_current: bool
+    end_time: datetime | None
+
+
+def is_event_active(start_time: datetime | None, end_time: datetime | None) -> bool:
+    if not start_time or not end_time:
+        return False
+    now_local = datetime.now(LOCAL_TZ)
+    return start_time.astimezone(LOCAL_TZ) <= now_local <= end_time.astimezone(LOCAL_TZ)
 
 
 def load_settings():
@@ -143,7 +150,7 @@ def get_access_token(msal_app, cache, cache_path):
     return token_result["access_token"]
 
 
-def format_event_time(event_start: datetime, event_end: datetime | None) -> tuple[str, str, bool]:
+def format_event_time(event_start: datetime, event_end: datetime | None) -> tuple[str, str]:
     local_time = event_start.astimezone(LOCAL_TZ)
     end_time = event_end.astimezone(LOCAL_TZ) if event_end else None
     today = datetime.now(LOCAL_TZ).date()
@@ -160,9 +167,7 @@ def format_event_time(event_start: datetime, event_end: datetime | None) -> tupl
         time_label = f"{local_time.strftime('%I:%M %p')} - {end_time.strftime('%I:%M %p %Z')}"
     else:
         time_label = local_time.strftime("%I:%M %p %Z")
-    now_local = datetime.now(LOCAL_TZ)
-    is_current = end_time is not None and local_time <= now_local <= end_time
-    return day_label, time_label, is_current
+    return day_label, time_label
 
 
 def parse_graph_datetime(value: str, time_zone: str) -> datetime | None:
@@ -221,7 +226,7 @@ def get_next_events(access_token, user_email, tenant_label, count=2) -> list[Eve
             parsed_end = parse_graph_datetime(end_time, end_zone)
             if parsed is None:
                 raise ValueError("Invalid start time")
-            day_label, time_label, is_current = format_event_time(parsed, parsed_end)
+            day_label, time_label = format_event_time(parsed, parsed_end)
         except ValueError:
             continue
 
@@ -234,7 +239,7 @@ def get_next_events(access_token, user_email, tenant_label, count=2) -> list[Eve
                 time_label=time_label,
                 subject=subject,
                 start_time=parsed,
-                is_current=is_current,
+                end_time=parsed_end,
             )
         )
 
@@ -247,8 +252,6 @@ def select_next_events(events: list[EventDisplay]) -> tuple[EventDisplay | None,
     events_sorted = sorted(events, key=lambda event: event.start_time)
     current = events_sorted[0]
     next_event = events_sorted[1] if len(events_sorted) > 1 else None
-    if current.is_current and next_event is None:
-        return current, None
     return current, next_event
 
 
@@ -444,7 +447,8 @@ class OutlookClockApp:
         self.current_event_day = "Fetching next event..."
         self.current_event_time = ""
         self.current_event_detail = ""
-        self.current_event_active = False
+        self.current_event_start: datetime | None = None
+        self.current_event_end: datetime | None = None
         self.next_event_day = ""
         self.next_event_time = ""
         self.next_event_detail = ""
@@ -513,7 +517,8 @@ class OutlookClockApp:
                 f"{self.current_event_detail}"
             )
         )
-        self.event_label.config(fg="green" if self.current_event_active else "white")
+        is_active = is_event_active(self.current_event_start, self.current_event_end)
+        self.event_label.config(fg="green" if is_active else "white")
         self.next_event_label.config(
             text=(
                 f"{self.next_event_day}\n"
@@ -554,17 +559,18 @@ class OutlookClockApp:
                         current_event.day_label,
                         current_event.time_label,
                         current_event.subject,
-                        current_event.is_current,
+                        current_event.start_time,
+                        current_event.end_time,
                         next_event.day_label if next_event else "",
                         next_event.time_label if next_event else "",
                         next_event.subject if next_event else "",
                     )
                 )
             else:
-                self.event_queue.put(("No upcoming events", "", "", False, "", "", ""))
+                self.event_queue.put(("No upcoming events", "", "", None, None, "", "", ""))
         except Exception as exc:  # noqa: BLE001 - surface errors for display
             logger.exception("Failed to refresh event.")
-            self.event_queue.put(("Error", "", str(exc), False, "", "", ""))
+            self.event_queue.put(("Error", "", str(exc), None, None, "", "", ""))
 
     def flush_event_queue(self):
         try:
@@ -573,7 +579,8 @@ class OutlookClockApp:
                     day_label,
                     time_info,
                     subject,
-                    is_current,
+                    start_time,
+                    end_time,
                     next_day,
                     next_time,
                     next_detail,
@@ -581,7 +588,8 @@ class OutlookClockApp:
                 self.current_event_day = day_label
                 self.current_event_time = time_info
                 self.current_event_detail = subject
-                self.current_event_active = is_current
+                self.current_event_start = start_time
+                self.current_event_end = end_time
                 self.next_event_day = next_day
                 self.next_event_time = next_time
                 self.next_event_detail = next_detail
