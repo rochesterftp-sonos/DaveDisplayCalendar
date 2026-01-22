@@ -539,6 +539,7 @@ class OutlookClockApp:
         now = datetime.now(LOCAL_TZ)
         self.time_label.config(text=now.strftime("%I:%M:%S %p %Z"))
         is_active = is_event_active(self.current_event_start, self.current_event_end)
+        is_soon = is_event_soon(self.current_event_start)
         day_label = self.current_event_day
         if self.current_event_day == "Today":
             if is_active:
@@ -554,7 +555,13 @@ class OutlookClockApp:
                 f"{self.current_event_detail}"
             )
         )
-        self.event_label.config(fg="green" if is_active else "white")
+        if is_active:
+            event_color = "green"
+        elif is_soon:
+            event_color = "red"
+        else:
+            event_color = "white"
+        self.event_label.config(fg=event_color)
         soon_next = is_event_soon(self.next_event_start)
         next_day_label = self.next_event_day
         if self.next_event_day == "Today":
