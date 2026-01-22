@@ -125,8 +125,9 @@ def get_access_token(msal_app, cache, cache_path):
     return token_result["access_token"]
 
 
-def format_event_time(event_start: datetime) -> tuple[str, str]:
+def format_event_time(event_start: datetime, event_end: datetime | None) -> tuple[str, str, bool]:
     local_time = event_start.astimezone(LOCAL_TZ)
+    end_time = event_end.astimezone(LOCAL_TZ) if event_end else None
     today = datetime.now(LOCAL_TZ).date()
     tomorrow = today + timedelta(days=1)
 
@@ -138,7 +139,24 @@ def format_event_time(event_start: datetime) -> tuple[str, str]:
         day_label = local_time.strftime("%b %d, %Y")
 
     time_label = local_time.strftime("%I:%M %p %Z")
-    return day_label, time_label
+    now_local = datetime.now(LOCAL_TZ)
+    is_current = end_time is not None and local_time <= now_local <= end_time
+    return day_label, time_label, is_current
+
+
+def parse_graph_datetime(value: str, time_zone: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        try:
+            parsed = parsed.replace(tzinfo=ZoneInfo(time_zone))
+        except Exception:  # noqa: BLE001 - fallback to UTC
+            parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def get_next_event(access_token, user_email, tenant_label):
@@ -165,36 +183,45 @@ def get_next_event(access_token, user_email, tenant_label):
     data = response.json()
     events = data.get("value", [])
     if not events:
-        return "No upcoming events", "", "", None
+        return "No upcoming events", "", "", None, False
 
     event = events[0]
     subject = event.get("subject") or "(No subject)"
-    start_time = event.get("start", {}).get("dateTime", "")
+    start = event.get("start", {})
+    end = event.get("end", {})
+    start_time = start.get("dateTime", "")
+    start_zone = start.get("timeZone", "UTC")
+    end_time = end.get("dateTime", "")
+    end_zone = end.get("timeZone", "UTC")
     parsed = None
     try:
-        parsed = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
-        day_label, time_label = format_event_time(parsed)
+        parsed = parse_graph_datetime(start_time, start_zone)
+        parsed_end = parse_graph_datetime(end_time, end_zone)
+        if parsed is None:
+            raise ValueError("Invalid start time")
+        day_label, time_label, is_current = format_event_time(parsed, parsed_end)
     except ValueError:
         day_label = "Upcoming event"
         time_label = start_time
+        is_current = False
 
     if user_email:
         subject = f"{subject} ({user_email})"
 
     time_line = time_label
-    return day_label, time_line, subject, parsed
+    return day_label, time_line, subject, parsed, is_current
 
 
 def select_next_event(events):
     dated_events = [event for event in events if event[3] is not None]
     if not dated_events:
         if not events:
-            return "No upcoming events", "", ""
-        day_label, time_label, subject, _event_time = events[0]
-        return day_label, time_label, subject
+            return "No upcoming events", "", "", False
+        day_label, time_label, subject, _event_time, is_current = events[0]
+        return day_label, time_label, subject, is_current
     dated_events.sort(key=lambda item: item[3])
-    day_label, time_label, subject, _event_time = dated_events[0]
-    return day_label, time_label, subject
+    day_label, time_label, subject, _event_time, is_current = dated_events[0]
+    return day_label, time_label, subject, is_current
 
 
 def parse_accounts_file(path: Path) -> list[TenantConfig]:
@@ -389,6 +416,7 @@ class OutlookClockApp:
         self.current_event_day = "Fetching next event..."
         self.current_event_time = ""
         self.current_event_detail = ""
+        self.current_event_active = False
 
         self.root.title("Outlook Clock")
         self.root.configure(bg="black")
@@ -401,7 +429,7 @@ class OutlookClockApp:
             fg="white",
             bg="black",
         )
-        self.time_label.pack(fill=BOTH, expand=True)
+        self.time_label.pack(fill=BOTH, expand=False)
 
         self.event_label = Label(
             root,
@@ -410,6 +438,8 @@ class OutlookClockApp:
             fg="white",
             bg="black",
             wraplength=900,
+            justify="center",
+            anchor="center",
         )
         self.event_label.pack(fill=BOTH, expand=True)
 
@@ -428,6 +458,7 @@ class OutlookClockApp:
                 f"{self.current_event_detail}"
             )
         )
+        self.event_label.config(fg="green" if self.current_event_active else "white")
         self.root.after(TIME_REFRESH_MILLISECONDS, self.update_time)
         self.flush_event_queue()
 
@@ -447,25 +478,26 @@ class OutlookClockApp:
                     cache_path,
                 )
                 token = get_access_token(msal_app, cache, cache_path)
-                day_label, time_info, subject, event_time = get_next_event(
+                day_label, time_info, subject, event_time, is_current = get_next_event(
                     token,
                     tenant.user_email,
                     tenant.name,
                 )
-                events.append((day_label, time_info, subject, event_time))
-            day_label, time_info, subject = select_next_event(events)
-            self.event_queue.put((day_label, time_info, subject))
+                events.append((day_label, time_info, subject, event_time, is_current))
+            day_label, time_info, subject, is_current = select_next_event(events)
+            self.event_queue.put((day_label, time_info, subject, is_current))
         except Exception as exc:  # noqa: BLE001 - surface errors for display
             logger.exception("Failed to refresh event.")
-            self.event_queue.put(("Error", "", str(exc)))
+            self.event_queue.put(("Error", "", str(exc), False))
 
     def flush_event_queue(self):
         try:
             while True:
-                day_label, time_info, subject = self.event_queue.get_nowait()
+                day_label, time_info, subject, is_current = self.event_queue.get_nowait()
                 self.current_event_day = day_label
                 self.current_event_time = time_info
                 self.current_event_detail = subject
+                self.current_event_active = is_current
         except queue.Empty:
             return
 
