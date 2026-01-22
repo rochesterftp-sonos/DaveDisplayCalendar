@@ -69,6 +69,23 @@ def is_event_soon(start_time: datetime | None, minutes: int = 10) -> bool:
     return start_local - now_local <= timedelta(minutes=minutes)
 
 
+def format_time_until(start_time: datetime | None) -> str:
+    if not start_time:
+        return ""
+    now_local = datetime.now(LOCAL_TZ)
+    start_local = start_time.astimezone(LOCAL_TZ)
+    if start_local <= now_local:
+        return ""
+    delta = start_local - now_local
+    total_minutes = int(delta.total_seconds() // 60)
+    hours, minutes = divmod(total_minutes, 60)
+    if hours and minutes:
+        return f"In {hours} hr {minutes} min"
+    if hours:
+        return f"In {hours} hr"
+    return f"In {minutes} min"
+
+
 def load_settings():
     load_dotenv()
     client_id = os.getenv("CLIENT_ID")
@@ -521,14 +538,22 @@ class OutlookClockApp:
     def update_time(self):
         now = datetime.now(LOCAL_TZ)
         self.time_label.config(text=now.strftime("%I:%M:%S %p %Z"))
+        is_active = is_event_active(self.current_event_start, self.current_event_end)
+        day_label = self.current_event_day
+        if self.current_event_day == "Today":
+            if is_active:
+                day_label = "Today - Currently Occurring"
+            else:
+                countdown = format_time_until(self.current_event_start)
+                if countdown:
+                    day_label = f"Today - {countdown}"
         self.event_label.config(
             text=(
-                f"{self.current_event_day}\n"
+                f"{day_label}\n"
                 f"{self.current_event_time}\n"
                 f"{self.current_event_detail}"
             )
         )
-        is_active = is_event_active(self.current_event_start, self.current_event_end)
         self.event_label.config(fg="green" if is_active else "white")
         soon_next = is_event_soon(self.next_event_start)
         self.next_event_label.config(
