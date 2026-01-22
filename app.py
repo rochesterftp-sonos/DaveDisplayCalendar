@@ -141,7 +141,7 @@ def format_event_time(event_start: datetime) -> tuple[str, str]:
     return day_label, time_label
 
 
-def get_next_event(access_token, user_email):
+def get_next_event(access_token, user_email, tenant_label):
     now = datetime.now(timezone.utc)
     end = now + timedelta(days=1)
 
@@ -156,7 +156,11 @@ def get_next_event(access_token, user_email):
 
     url = f"{GRAPH_ENDPOINT}/me/calendarView"
     response = requests.get(url, headers=headers, params=params, timeout=10)
-    response.raise_for_status()
+    try:
+        response.raise_for_status()
+    except requests.HTTPError as exc:
+        detail = response.text.strip() if response.text else str(exc)
+        raise RuntimeError(f"{tenant_label}: Graph request failed ({response.status_code}). {detail}") from exc
 
     data = response.json()
     events = data.get("value", [])
@@ -446,6 +450,7 @@ class OutlookClockApp:
                 day_label, time_info, subject, event_time = get_next_event(
                     token,
                     tenant.user_email,
+                    tenant.name,
                 )
                 events.append((day_label, time_info, subject, event_time))
             day_label, time_info, subject = select_next_event(events)
