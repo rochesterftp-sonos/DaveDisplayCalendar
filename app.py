@@ -556,9 +556,14 @@ class OutlookClockApp:
         )
         self.event_label.config(fg="green" if is_active else "white")
         soon_next = is_event_soon(self.next_event_start)
+        next_day_label = self.next_event_day
+        if self.next_event_day == "Today":
+            countdown = format_time_until(self.next_event_start)
+            if countdown:
+                next_day_label = f"Today - {countdown}"
         self.next_event_label.config(
             text=(
-                f"{self.next_event_day}\n"
+                f"{next_day_label}\n"
                 f"{self.next_event_time}\n"
                 f"{self.next_event_detail}"
             ).strip()
