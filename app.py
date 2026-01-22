@@ -22,6 +22,12 @@ EVENT_REFRESH_SECONDS = 300
 TIME_REFRESH_MILLISECONDS = 1000
 GRAPH_ENDPOINT = "https://graph.microsoft.com/v1.0"
 LOCAL_TZ = ZoneInfo("America/New_York")
+WINDOWS_TZ_MAP = {
+    "Eastern Standard Time": "America/New_York",
+    "Central Standard Time": "America/Chicago",
+    "Mountain Standard Time": "America/Denver",
+    "Pacific Standard Time": "America/Los_Angeles",
+}
 
 logger = logging.getLogger(__name__)
 
@@ -138,7 +144,10 @@ def format_event_time(event_start: datetime, event_end: datetime | None) -> tupl
     else:
         day_label = local_time.strftime("%b %d, %Y")
 
-    time_label = local_time.strftime("%I:%M %p %Z")
+    if end_time:
+        time_label = f"{local_time.strftime('%I:%M %p')} - {end_time.strftime('%I:%M %p %Z')}"
+    else:
+        time_label = local_time.strftime("%I:%M %p %Z")
     now_local = datetime.now(LOCAL_TZ)
     is_current = end_time is not None and local_time <= now_local <= end_time
     return day_label, time_label, is_current
@@ -153,7 +162,8 @@ def parse_graph_datetime(value: str, time_zone: str) -> datetime | None:
         return None
     if parsed.tzinfo is None:
         try:
-            parsed = parsed.replace(tzinfo=ZoneInfo(time_zone))
+            mapped_zone = WINDOWS_TZ_MAP.get(time_zone, time_zone)
+            parsed = parsed.replace(tzinfo=ZoneInfo(mapped_zone))
         except Exception:  # noqa: BLE001 - fallback to UTC
             parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed
