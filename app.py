@@ -25,6 +25,8 @@ LOCAL_TZ = ZoneInfo("America/New_York")
 CURRENT_EVENT_FONT = ("Helvetica", 28)
 NEXT_EVENT_FONT = ("Helvetica", 14)
 NEXT_EVENT_COLOR = "#CCCCCC"
+NO_MORE_TODAY_MESSAGE = "Congrats.. All Done Today!!"
+NO_MORE_TODAY_FONT = ("Helvetica", 32)
 WINDOWS_TZ_MAP = {
     "Eastern Standard Time": "America/New_York",
     "Central Standard Time": "America/Chicago",
@@ -541,16 +543,25 @@ class OutlookClockApp:
         self.time_label.config(text=now.strftime("%I:%M:%S %p %Z"))
         if self.current_event_end and now > self.current_event_end.astimezone(LOCAL_TZ):
             if self.next_event_start:
-                self.current_event_day = self.next_event_day
-                self.current_event_time = self.next_event_time
-                self.current_event_detail = self.next_event_detail
-                self.current_event_start = self.next_event_start
-                self.current_event_end = self.next_event_end
-                self.next_event_day = ""
-                self.next_event_time = ""
-                self.next_event_detail = ""
-                self.next_event_start = None
-                self.next_event_end = None
+                next_date = self.next_event_start.astimezone(LOCAL_TZ).date()
+                today = now.date()
+                if next_date == today:
+                    self.current_event_day = self.next_event_day
+                    self.current_event_time = self.next_event_time
+                    self.current_event_detail = self.next_event_detail
+                    self.current_event_start = self.next_event_start
+                    self.current_event_end = self.next_event_end
+                    self.next_event_day = ""
+                    self.next_event_time = ""
+                    self.next_event_detail = ""
+                    self.next_event_start = None
+                    self.next_event_end = None
+                else:
+                    self.current_event_day = NO_MORE_TODAY_MESSAGE
+                    self.current_event_time = ""
+                    self.current_event_detail = ""
+                    self.current_event_start = None
+                    self.current_event_end = None
             else:
                 self.current_event_day = "Fetching next event..."
                 self.current_event_time = ""
@@ -567,20 +578,24 @@ class OutlookClockApp:
                 countdown = format_time_until(self.current_event_start)
                 if countdown:
                     day_label = f"Today - {countdown}"
-        self.event_label.config(
-            text=(
-                f"{day_label}\n"
-                f"{self.current_event_time}\n"
-                f"{self.current_event_detail}"
-            )
-        )
-        if is_active:
-            event_color = "green"
-        elif is_soon:
-            event_color = "red"
+        if self.current_event_day == NO_MORE_TODAY_MESSAGE:
+            self.event_label.config(text=NO_MORE_TODAY_MESSAGE, fg="green", font=NO_MORE_TODAY_FONT)
         else:
-            event_color = "white"
-        self.event_label.config(fg=event_color)
+            self.event_label.config(
+                text=(
+                    f"{day_label}\n"
+                    f"{self.current_event_time}\n"
+                    f"{self.current_event_detail}"
+                ),
+                font=CURRENT_EVENT_FONT,
+            )
+            if is_active:
+                event_color = "green"
+            elif is_soon:
+                event_color = "red"
+            else:
+                event_color = "white"
+            self.event_label.config(fg=event_color)
         soon_next = is_event_soon(self.next_event_start)
         next_day_label = self.next_event_day
         if self.next_event_day == "Today":
@@ -623,20 +638,38 @@ class OutlookClockApp:
                 )
             current_event, next_event = select_next_events(events)
             if current_event:
-                self.event_queue.put(
-                    (
-                        current_event.day_label,
-                        current_event.time_label,
-                        current_event.subject,
-                        current_event.start_time,
-                        current_event.end_time,
-                        next_event.start_time if next_event else None,
-                        next_event.end_time if next_event else None,
-                        next_event.day_label if next_event else "",
-                        next_event.time_label if next_event else "",
-                        next_event.subject if next_event else "",
+                today = datetime.now(LOCAL_TZ).date()
+                current_date = current_event.start_time.astimezone(LOCAL_TZ).date()
+                if current_date > today:
+                    self.event_queue.put(
+                        (
+                            NO_MORE_TODAY_MESSAGE,
+                            "",
+                            "",
+                            None,
+                            None,
+                            current_event.start_time,
+                            current_event.end_time,
+                            current_event.day_label,
+                            current_event.time_label,
+                            current_event.subject,
+                        )
                     )
-                )
+                else:
+                    self.event_queue.put(
+                        (
+                            current_event.day_label,
+                            current_event.time_label,
+                            current_event.subject,
+                            current_event.start_time,
+                            current_event.end_time,
+                            next_event.start_time if next_event else None,
+                            next_event.end_time if next_event else None,
+                            next_event.day_label if next_event else "",
+                            next_event.time_label if next_event else "",
+                            next_event.subject if next_event else "",
+                        )
+                    )
             else:
                 self.event_queue.put(("No upcoming events", "", "", None, None, None, None, "", "", ""))
         except Exception as exc:  # noqa: BLE001 - surface errors for display
