@@ -2,6 +2,8 @@ import json
 import logging
 import os
 import queue
+import shlex
+import subprocess
 import threading
 import webbrowser
 from dataclasses import dataclass
@@ -19,9 +21,12 @@ SETTINGS_FILE = Path("settings.json")
 ACCOUNTS_FILE = Path("accounts.txt")
 LOG_FILE = Path("outlook_clock.log")
 EVENT_REFRESH_SECONDS = 300
+USAGE_REFRESH_SECONDS = 300
 TIME_REFRESH_MILLISECONDS = 1000
 GRAPH_ENDPOINT = "https://graph.microsoft.com/v1.0"
+OPENROUTER_KEY_ENDPOINT = "https://openrouter.ai/api/v1/auth/key"
 LOCAL_TZ = ZoneInfo("America/New_York")
+USAGE_STATUS_FONT = ("Helvetica", 16)
 CURRENT_EVENT_FONT = ("Helvetica", 28)
 NEXT_EVENT_FONT = ("Helvetica", 14)
 NEXT_EVENT_COLOR = "#CCCCCC"
@@ -86,6 +91,92 @@ def format_time_until(start_time: datetime | None) -> str:
     if hours:
         return f"In {hours} hr"
     return f"In {minutes} min"
+
+
+def format_usage_value(value: float | int | None) -> str:
+    if value is None:
+        return "N/A"
+    return f"${value:,.2f}"
+
+
+def build_claude_usage_summary() -> str:
+    command = os.getenv("CLAUDE_USAGE_COMMAND", "claude usage --json").strip()
+    if not command:
+        return "Claude: command not configured"
+    try:
+        result = subprocess.run(
+            shlex.split(command),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    except FileNotFoundError:
+        return "Claude: CLI not found"
+    except Exception as exc:  # noqa: BLE001 - keep status rendering resilient
+        logger.exception("Failed to fetch Claude usage.")
+        return f"Claude: {exc}"
+
+    if result.returncode != 0:
+        error_text = result.stderr.strip() or "query failed"
+        return f"Claude: {error_text}"
+
+    output = result.stdout.strip()
+    if not output:
+        return "Claude: no usage data"
+
+    try:
+        payload = json.loads(output)
+    except json.JSONDecodeError:
+        first_line = output.splitlines()[0].strip()
+        return f"Claude: {first_line}"
+
+    session = payload.get("session") if isinstance(payload, dict) else None
+    weekly = payload.get("weekly") if isinstance(payload, dict) else None
+    if not isinstance(session, dict) or not isinstance(weekly, dict):
+        compact = json.dumps(payload, separators=(",", ":"))
+        return f"Claude: {compact[:120]}"
+
+    session_used = session.get("used")
+    session_limit = session.get("limit")
+    weekly_used = weekly.get("used")
+    weekly_limit = weekly.get("limit")
+    return (
+        "Claude: Session "
+        f"{format_usage_value(session_used)}/{format_usage_value(session_limit)} | "
+        f"Week {format_usage_value(weekly_used)}/{format_usage_value(weekly_limit)}"
+    )
+
+
+def build_openrouter_summary() -> str:
+    api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+    if not api_key:
+        return "OpenRouter: API key not set"
+    try:
+        response = requests.get(
+            OPENROUTER_KEY_ENDPOINT,
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=10,
+        )
+        response.raise_for_status()
+        payload = response.json().get("data", {})
+    except Exception as exc:  # noqa: BLE001 - UI should stay alive on API errors
+        logger.exception("Failed to fetch OpenRouter credits.")
+        return f"OpenRouter: {exc}"
+
+    if not isinstance(payload, dict):
+        return "OpenRouter: invalid response"
+    usage = payload.get("usage")
+    limit = payload.get("limit")
+    if usage is None or limit is None:
+        return "OpenRouter: credits unavailable"
+    try:
+        credits_left = float(limit) - float(usage)
+    except (TypeError, ValueError):
+        return "OpenRouter: credits unavailable"
+    if credits_left < 0:
+        credits_left = 0.0
+    return f"OpenRouter: Credits left {format_usage_value(credits_left)}"
 
 
 def load_settings():
@@ -473,6 +564,8 @@ class OutlookClockApp:
         self.root = root
         self.tenants = tenants
         self.event_queue = queue.Queue()
+        self.usage_queue = queue.Queue()
+        self.usage_status = "Usage: Loading..."
         self.current_event_day = "Fetching next event..."
         self.current_event_time = ""
         self.current_event_detail = ""
@@ -488,17 +581,32 @@ class OutlookClockApp:
         self.root.configure(bg="black")
         self.root.attributes("-fullscreen", True)
 
-        self.root.grid_rowconfigure(0, weight=1)
-        self.root.grid_rowconfigure(1, weight=2)
-        self.root.grid_rowconfigure(2, weight=1)
+        self.root.grid_rowconfigure(0, weight=0)
+        self.root.grid_rowconfigure(1, weight=1)
+        self.root.grid_rowconfigure(2, weight=2)
+        self.root.grid_rowconfigure(3, weight=1)
         self.root.grid_columnconfigure(0, weight=1)
 
+        self.usage_frame = Frame(root, bg="black")
+        self.usage_frame.grid(row=0, column=0, sticky="nsew")
         self.time_frame = Frame(root, bg="black")
-        self.time_frame.grid(row=0, column=0, sticky="nsew")
+        self.time_frame.grid(row=1, column=0, sticky="nsew")
         self.event_frame = Frame(root, bg="black")
-        self.event_frame.grid(row=1, column=0, sticky="nsew")
+        self.event_frame.grid(row=2, column=0, sticky="nsew")
         self.next_frame = Frame(root, bg="black")
-        self.next_frame.grid(row=2, column=0, sticky="nsew")
+        self.next_frame.grid(row=3, column=0, sticky="nsew")
+
+        self.usage_label = Label(
+            self.usage_frame,
+            text=self.usage_status,
+            font=USAGE_STATUS_FONT,
+            fg="#7FB3FF",
+            bg="black",
+            wraplength=1100,
+            justify="center",
+            anchor="center",
+        )
+        self.usage_label.pack(fill=BOTH, expand=True, pady=8)
 
         self.time_label = Label(
             self.time_frame,
@@ -535,6 +643,7 @@ class OutlookClockApp:
 
         self.update_time()
         self.schedule_event_refresh()
+        self.schedule_usage_refresh()
 
         root.bind("<Escape>", lambda _event: root.destroy())
 
@@ -610,13 +719,20 @@ class OutlookClockApp:
             ).strip()
         )
         self.next_event_label.config(fg="red" if soon_next else NEXT_EVENT_COLOR)
+        self.usage_label.config(text=self.usage_status)
         self.root.after(TIME_REFRESH_MILLISECONDS, self.update_time)
         self.flush_event_queue()
+        self.flush_usage_queue()
 
     def schedule_event_refresh(self):
         thread = threading.Thread(target=self.refresh_event, daemon=True)
         thread.start()
         self.root.after(EVENT_REFRESH_SECONDS * 1000, self.schedule_event_refresh)
+
+    def schedule_usage_refresh(self):
+        thread = threading.Thread(target=self.refresh_usage, daemon=True)
+        thread.start()
+        self.root.after(USAGE_REFRESH_SECONDS * 1000, self.schedule_usage_refresh)
 
     def refresh_event(self):
         try:
@@ -676,6 +792,12 @@ class OutlookClockApp:
             logger.exception("Failed to refresh event.")
             self.event_queue.put(("Error", "", str(exc), None, None, None, None, "", "", ""))
 
+    def refresh_usage(self):
+        claude_summary = build_claude_usage_summary()
+        openrouter_summary = build_openrouter_summary()
+        timestamp = datetime.now(LOCAL_TZ).strftime("%I:%M %p")
+        self.usage_queue.put(f"{claude_summary} | {openrouter_summary} | Updated {timestamp}")
+
     def flush_event_queue(self):
         try:
             while True:
@@ -701,6 +823,13 @@ class OutlookClockApp:
                 self.next_event_day = next_day
                 self.next_event_time = next_time
                 self.next_event_detail = next_detail
+        except queue.Empty:
+            return
+
+    def flush_usage_queue(self):
+        try:
+            while True:
+                self.usage_status = self.usage_queue.get_nowait()
         except queue.Empty:
             return
 
