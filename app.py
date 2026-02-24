@@ -2,9 +2,6 @@ import json
 import logging
 import os
 import queue
-import re
-import shlex
-import subprocess
 import threading
 import webbrowser
 from dataclasses import dataclass
@@ -98,77 +95,6 @@ def format_usage_value(value: float | int | None) -> str:
     if value is None:
         return "N/A"
     return f"${value:,.2f}"
-
-
-def build_claude_usage_summary() -> str:
-    command = os.getenv("CLAUDE_USAGE_COMMAND", "claude usage --json").strip()
-    if not command:
-        return "Claude: command not configured"
-    def run_usage(cmd: str):
-        return subprocess.run(
-            shlex.split(cmd),
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=20,
-        )
-
-    try:
-        result = run_usage(command)
-    except FileNotFoundError:
-        return "Claude: CLI not found"
-    except Exception as exc:  # noqa: BLE001 - keep status rendering resilient
-        logger.exception("Failed to fetch Claude usage.")
-        return f"Claude: {exc}"
-
-    # Older Claude CLI builds do not support --json.
-    if result.returncode != 0 and "--json" in command and "unknown option '--json'" in result.stderr:
-        fallback_command = command.replace("--json", "").strip()
-        if fallback_command:
-            try:
-                result = run_usage(fallback_command)
-            except Exception as exc:  # noqa: BLE001 - keep status rendering resilient
-                logger.exception("Failed fallback Claude usage command.")
-                return f"Claude: {exc}"
-
-    if result.returncode != 0:
-        error_text = result.stderr.strip() or "query failed"
-        return f"Claude: {error_text}"
-
-    output = result.stdout.strip()
-    if not output:
-        return "Claude: no usage data"
-
-    try:
-        payload = json.loads(output)
-    except json.JSONDecodeError:
-        # Parse plain-text output for Session/Week summaries when JSON is unavailable.
-        clean = re.sub(r"\x1b\[[0-9;]*m", "", output)
-        lines = [line.strip() for line in clean.splitlines() if line.strip()]
-        session_line = next((line for line in lines if "session" in line.lower()), "")
-        week_line = next((line for line in lines if "week" in line.lower()), "")
-        if session_line and week_line:
-            return f"Claude: {session_line} | {week_line}"
-        if session_line:
-            return f"Claude: {session_line}"
-        first_line = lines[0] if lines else "no usage data"
-        return f"Claude: {first_line}"
-
-    session = payload.get("session") if isinstance(payload, dict) else None
-    weekly = payload.get("weekly") if isinstance(payload, dict) else None
-    if not isinstance(session, dict) or not isinstance(weekly, dict):
-        compact = json.dumps(payload, separators=(",", ":"))
-        return f"Claude: {compact[:120]}"
-
-    session_used = session.get("used")
-    session_limit = session.get("limit")
-    weekly_used = weekly.get("used")
-    weekly_limit = weekly.get("limit")
-    return (
-        "Claude: Session "
-        f"{format_usage_value(session_used)}/{format_usage_value(session_limit)} | "
-        f"Week {format_usage_value(weekly_used)}/{format_usage_value(weekly_limit)}"
-    )
 
 
 def build_openrouter_summary() -> str:
@@ -816,10 +742,9 @@ class OutlookClockApp:
             self.event_queue.put(("Error", "", str(exc), None, None, None, None, "", "", ""))
 
     def refresh_usage(self):
-        claude_summary = build_claude_usage_summary()
         openrouter_summary = build_openrouter_summary()
         timestamp = datetime.now(LOCAL_TZ).strftime("%I:%M %p")
-        self.usage_queue.put(f"{claude_summary} | {openrouter_summary} | Updated {timestamp}")
+        self.usage_queue.put(f"{openrouter_summary} | Updated {timestamp}")
 
     def flush_event_queue(self):
         try:
